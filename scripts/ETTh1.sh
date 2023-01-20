@@ -10,6 +10,9 @@ python -u main_informer.py --model informer --data ETTh1 --features M --seq_len 
 
 python -u main_informer.py --model informer --data ETTh1 --features M --seq_len 336 --label_len 336 --pred_len 720 --e_layers 2 --d_layers 1 --attn prob --des 'Exp' --itr 5
 
+### MS - self added 
+python -u main_informer.py --model informer --data ETTh1 --features MS --seq_len 96 --label_len 48 --pred_len 24 --e_layers 2 --d_layers 1 --attn prob --des 'Exp' --itr 1 --factor 3
+
 ### S
 
 python -u main_informer.py --model informer --data ETTh1 --features S --seq_len 720 --label_len 168 --pred_len 24 --e_layers 2 --d_layers 1 --attn prob --des 'Exp' --itr 5

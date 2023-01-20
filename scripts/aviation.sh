@@ -1,0 +1,1 @@
+python -u main_informer.py --model informer --data ... --features ... --seq_len ... --label_len ... --pred_len 6 --e_layers ... --d_layers ... --attn prob --des 'Exp' --itr 5 --factor 3

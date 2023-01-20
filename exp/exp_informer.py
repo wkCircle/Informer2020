@@ -1,3 +1,4 @@
+from typing import Union 
 from data.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred
 from exp.exp_basic import Exp_Basic
 from models.model import Informer, InformerStack
@@ -20,7 +21,7 @@ warnings.filterwarnings('ignore')
 
 class Exp_Informer(Exp_Basic):
     def __init__(self, args):
-        super(Exp_Informer, self).__init__(args)
+        super(Exp_Informer, self).__init__(args) # auto call _build_model() to create sefl.model
     
     def _build_model(self):
         model_dict = {
@@ -28,6 +29,7 @@ class Exp_Informer(Exp_Basic):
             'informerstack':InformerStack,
         }
         if self.args.model=='informer' or self.args.model=='informerstack':
+            # e_layers = 2 if informer, o.w., =[3,2,1] for default case
             e_layers = self.args.e_layers if self.args.model=='informer' else self.args.s_layers
             model = model_dict[self.args.model](
                 self.args.enc_in,
@@ -60,6 +62,7 @@ class Exp_Informer(Exp_Basic):
     def _get_data(self, flag):
         args = self.args
 
+        # "Data" is the pointer that points to Dataset_Custom, Dataset_ETT_xxx etc.
         data_dict = {
             'ETTh1':Dataset_ETT_hour,
             'ETTh2':Dataset_ETT_hour,
@@ -68,11 +71,17 @@ class Exp_Informer(Exp_Basic):
             'WTH':Dataset_Custom,
             'ECL':Dataset_Custom,
             'Solar':Dataset_Custom,
+            'aviation': Dataset_Custom, # LHT aviation dataset
             'custom':Dataset_Custom,
         }
-        Data = data_dict[self.args.data]
+        Data = data_dict[self.args.data] 
+        # args.embed can be [timeF, fixed, learned]. Only timeF (default) corresponds to timeenc=1
         timeenc = 0 if args.embed!='timeF' else 1
 
+        # flag can be train, val, test, pred
+        # when train/val mode (else): shuffle and drop last non-full batch
+        # when test mode: no shuffling and still drop last non-full batch
+        # when pred mode: no shuffling and no any drop. (batch_szie=1)
         if flag == 'test':
             shuffle_flag = False; drop_last = True; batch_size = args.batch_size; freq=args.freq
         elif flag=='pred':
@@ -134,6 +143,7 @@ class Exp_Informer(Exp_Basic):
         time_now = time.time()
         
         train_steps = len(train_loader)
+        # the patience is for epoch count
         early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
         
         model_optim = self._select_optimizer()
@@ -148,6 +158,10 @@ class Exp_Informer(Exp_Basic):
             
             self.model.train()
             epoch_time = time.time()
+            # _mark: related to data_stamp
+            # case ETTH1 (features M): batch_x(_mark) = (32,seq_len,7 (4)); batch_y(_mark)= (32, label_len+pred_len, 7 (4))
+            # where 4 is determined by time_features(timeenc (args.embed),  args.freq) that generates 
+            # [Hour of day, day of week, day of month, day of year] features for hourly freq.
             for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(train_loader):
                 iter_count += 1
                 
@@ -180,13 +194,14 @@ class Exp_Informer(Exp_Basic):
 
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            # check point override per epoch: 
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
 
             adjust_learning_rate(model_optim, epoch+1, self.args)
-            
+        # load the best 
         best_model_path = path+'/'+'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         
@@ -256,7 +271,27 @@ class Exp_Informer(Exp_Basic):
         
         return
 
-    def _process_one_batch(self, dataset_object, batch_x, batch_y, batch_x_mark, batch_y_mark):
+    def _process_one_batch(self, dataset_object: Dataset_Custom, batch_x, batch_y, batch_x_mark, batch_y_mark):
+        """
+        Args: 
+            dataset_object (Dataset_Custom, Dataset_ETT_hour/minute)
+            batch_x (np.ndarray): shape (batch_size, seq_len, nondate_features_dim)
+            batch_y (np.ndarray): shape (batch_size, label_len+pred_len, nondate_features_dim)
+            batch_x_mark (np.ndarray): shape (batch_size, seq_len, date_features_dim)
+            batch_y_mask (np.ndarray): shape (batch_size, label_len+pred_len, date_features_dim)
+        
+        Returns: 
+            outputs (np.ndarray): the model prediction of shape (batch_size, pred_len, target_dim)
+            batch_y (np.ndarray): the ground truth of shape (batch_size, pred_len, target_dim), 
+                which cuts off label_len from original input.
+        
+        Naming rules: 
+            encoder length = seq_len 
+            decoder length = label_len + pred_len 
+            encoder & decoder overlaps on label_len which is the last part of seq_len
+            _x: for encoder 
+            _y: for decoder 
+        """
         batch_x = batch_x.float().to(self.device)
         batch_y = batch_y.float()
 
@@ -264,25 +299,32 @@ class Exp_Informer(Exp_Basic):
         batch_y_mark = batch_y_mark.float().to(self.device)
 
         # decoder input
-        if self.args.padding==0:
-            dec_inp = torch.zeros([batch_y.shape[0], self.args.pred_len, batch_y.shape[-1]]).float()
+        if self.args.padding==0: # default action
+            func_pointer = torch.zeros 
         elif self.args.padding==1:
-            dec_inp = torch.ones([batch_y.shape[0], self.args.pred_len, batch_y.shape[-1]]).float()
+            func_pointer = torch.ones 
+        dec_inp = func_pointer([batch_y.shape[0], self.args.pred_len, batch_y.shape[-1]]).float()
         dec_inp = torch.cat([batch_y[:,:self.args.label_len,:], dec_inp], dim=1).float().to(self.device)
         # encoder - decoder
-        if self.args.use_amp:
+        if self.args.use_amp: # default false
             with torch.cuda.amp.autocast():
-                if self.args.output_attention:
+                if self.args.output_attention: # default false 
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
         else:
             if self.args.output_attention:
+                # output attention would just be the first row of the output batch 
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
             else:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
         if self.args.inverse:
             outputs = dataset_object.inverse_transform(outputs)
+
+        # re-format ground truth
+        # when MS mode: take only the last column (assuming it is the target feature position), o.w., 
+        # keep all features. 
+        # batch_y is always cut to have only pred len at the end.
         f_dim = -1 if self.args.features=='MS' else 0
         batch_y = batch_y[:,-self.args.pred_len:,f_dim:].to(self.device)
 
