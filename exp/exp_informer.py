@@ -1,20 +1,21 @@
 from typing import Union 
-from data.data_loader import Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred
+import numpy as np
+import pickle, os, time 
+
+from data.data_loader import (
+    Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, 
+    Dataset_Aviation, Dataset_Pred
+)
 from exp.exp_basic import Exp_Basic
 from models.model import Informer, InformerStack
 
 from utils.tools import EarlyStopping, adjust_learning_rate
 from utils.metrics import metric
 
-import numpy as np
-
 import torch
 import torch.nn as nn
 from torch import optim
 from torch.utils.data import DataLoader
-
-import os
-import time
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -71,7 +72,7 @@ class Exp_Informer(Exp_Basic):
             'WTH':Dataset_Custom,
             'ECL':Dataset_Custom,
             'Solar':Dataset_Custom,
-            'aviation': Dataset_Custom, # LHT aviation dataset
+            'aviation': Dataset_Aviation, # LHT aviation dataset
             'custom':Dataset_Custom,
         }
         Data = data_dict[self.args.data] 
@@ -148,10 +149,13 @@ class Exp_Informer(Exp_Basic):
         
         model_optim = self._select_optimizer()
         criterion =  self._select_criterion()
-
         if self.args.use_amp:
             scaler = torch.cuda.amp.GradScaler()
 
+        history = {
+            'train_epoch_loss':[], 'valid_epoch_loss': [], 'test_epoch_loss': [], 'criterion': criterion._get_name(), 
+            'epochs': self.args.train_epochs, 'earlystop_patience': self.args.patience, 
+        }
         for epoch in range(self.args.train_epochs):
             iter_count = 0
             train_loss = []
@@ -191,10 +195,15 @@ class Exp_Informer(Exp_Basic):
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
             test_loss = self.vali(test_data, test_loader, criterion)
-
+            history['train_epoch_loss'].append(train_loss)
+            history['valid_epoch_loss'].append(vali_loss)
+            history['test_epoch_loss'].append(test_loss)
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
                 epoch + 1, train_steps, train_loss, vali_loss, test_loss))
-            # check point override per epoch: 
+            # override history
+            with open(path + '/history', 'wb') as fw: 
+                pickle.dump(history, fw)
+            # (override) check point per epoch: 
             early_stopping(vali_loss, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
@@ -205,11 +214,15 @@ class Exp_Informer(Exp_Basic):
         best_model_path = path+'/'+'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
         
-        return self.model
+        return history
 
-    def test(self, setting):
+    def test(self, setting: str, load=False):
         test_data, test_loader = self._get_data(flag='test')
         
+        if load:
+            path = os.path.join(self.args.checkpoints, setting)
+            best_model_path = path+'/'+'checkpoint.pth'
+            self.model.load_state_dict(torch.load(best_model_path))
         self.model.eval()
         
         preds = []
@@ -242,9 +255,11 @@ class Exp_Informer(Exp_Basic):
 
         return
 
-    def predict(self, setting, load=False):
+    def predict(self, setting: str, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
         
+        # note: following the default pipeline, model is not retrained on test and directly give out-of-sample
+        # prediction here.
         if load:
             path = os.path.join(self.args.checkpoints, setting)
             best_model_path = path+'/'+'checkpoint.pth'
@@ -253,7 +268,9 @@ class Exp_Informer(Exp_Basic):
         self.model.eval()
         
         preds = []
-        
+        # In prediction mode, since we predict out-of-data, 
+        # batch_y is only of label_len while batch_y_mark is of label_len+pred_len. 
+        # len(pred_loader)==1
         for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(pred_loader):
             pred, true = self._process_one_batch(
                 pred_data, batch_x, batch_y, batch_x_mark, batch_y_mark)

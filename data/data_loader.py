@@ -120,7 +120,7 @@ class Dataset_ETT_hour(Dataset):
     def __len__(self):
         # counts the number iterations avaialbe to take seq_x, seq_y
         # no need to deduct label_len because it is always part of seq_len (the last part)
-        return len(self.data_x) - self.seq_len- self.pred_len + 1
+        return len(self.data_x) - self.seq_len - self.pred_len + 1
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
@@ -347,6 +347,7 @@ class Dataset_Pred(Dataset):
     def __read_data__(self):
 
         # df_raw.columns: ['date', ...(other features), target feature]
+        # # cols can be exogenous non-date features from external or df_raw columns  
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path, self.data_path))
         if self.cols:
@@ -373,12 +374,12 @@ class Dataset_Pred(Dataset):
         else:
             data = df_data.values
             
-        tmp_stamp = df_raw[['date']][border1:border2]
+        tmp_stamp = df_raw[['date']][border1:border2] # take the last seq_len part of the whole dataset
         tmp_stamp['date'] = pd.to_datetime(tmp_stamp.date)
         pred_dates = pd.date_range(tmp_stamp.date.values[-1], periods=self.pred_len+1, freq=self.freq)
         
         df_stamp = pd.DataFrame(columns = ['date'])
-        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:])
+        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:]) # seq_len + pred_len (label_len is the last part of seq_len.)
         data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq[-1:])
 
         self.data_x = data[border1:border2]

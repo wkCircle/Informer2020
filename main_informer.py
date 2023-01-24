@@ -1,6 +1,7 @@
 import argparse
 import os
 import torch
+from pathlib import Path 
 
 from exp.exp_informer import Exp_Informer
 
@@ -102,14 +103,19 @@ for ii in range(args.itr):
                 args.embed, args.distil, args.mix, args.des, ii)
 
     exp = Exp(args) # set experiments: independent of ii at the initialization stage
-    print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>>>>>>>>>>>'.format(setting))
-    exp.train(setting)
+    best_model_path = Path(args.checkpoints) / setting / "checkpoint.pth"
+    if best_model_path.is_file(): 
+        print('>>>>>>>Loading model: {}>>>>>>>>>>>>>>>>'.format(setting))
+        exp.model.load_state_dict(torch.load(best_model_path))
+    else: 
+        print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>'.format(setting))
+        exp.train(setting)
     
-    print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-    exp.test(setting)
+    # print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+    # exp.test(setting)
 
     if args.do_predict:
-        print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-        exp.predict(setting, True)
+        print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        exp.predict(setting, load=True)
 
     torch.cuda.empty_cache()
