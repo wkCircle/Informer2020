@@ -60,8 +60,8 @@ class StandardScaler():
         self.std = 1.
     
     def fit(self, data: np.ndarray):
-        self.mean = data.mean(0)
-        self.std = data.std(0)
+        self.mean = np.nanmean(data, axis=0)
+        self.std = np.nanstd(data, axis=0)
 
     def transform(self, data):
         mean = torch.from_numpy(self.mean).type_as(data).to(data.device) if torch.is_tensor(data) else self.mean
@@ -71,7 +71,13 @@ class StandardScaler():
     def inverse_transform(self, data):
         mean = torch.from_numpy(self.mean).type_as(data).to(data.device) if torch.is_tensor(data) else self.mean
         std = torch.from_numpy(self.std).type_as(data).to(data.device) if torch.is_tensor(data) else self.std
-        if data.shape[-1] != mean.shape[-1]:
+        # for multi-emb mode of aviation dataset where each time series may have additional feature. 
+        # The following implementation assumes the target SUM_ophrs_act is always at the odd positions.
+        if data.shape[-1] == mean.shape[-1] // 2: 
+            mean = mean[1::2]
+            std = std[1::2]
+        # take only the last column when num cols not matched.
+        elif data.shape[-1] != mean.shape[-1]:
             mean = mean[-1:]
             std = std[-1:]
         return (data * std) + mean

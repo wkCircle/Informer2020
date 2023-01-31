@@ -1,10 +1,25 @@
 import argparse
 import os
 import torch
+import random 
 from pathlib import Path 
+import numpy as np 
+import pandas as pd 
 
 from exp.exp_informer import Exp_Informer
+from utils.read_aviation import read_aviation 
+from data.data_loader import (
+    Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred, 
+    Dataset_Aviation, Dataset_AviationPred
+)
 
+# control randomness 
+seed = 42 
+torch.manual_seed(seed)
+random.seed(seed)
+np.random.seed(seed)
+
+# arg parser
 parser = argparse.ArgumentParser(description='[Informer] Long Sequences Forecasting')
 
 parser.add_argument('--model', type=str, required=True, default='informer',help='model of experiment, options: [informer, informerstack, informerlight(TBD)]')
@@ -77,12 +92,18 @@ data_parser = {
     'WTH':{'data':'WTH.csv','T':'WetBulbCelsius','M':[12,12,12],'S':[1,1,1],'MS':[12,12,1]},
     'ECL':{'data':'ECL.csv','T':'MT_320','M':[321,321,321],'S':[1,1,1],'MS':[321,321,1]},
     'Solar':{'data':'solar_AL.csv','T':'POWER_136','M':[137,137,137],'S':[1,1,1],'MS':[137,137,1]},
-    # 'aviation': {'data': ..., 'T':'SUM_ophrs_act', 'MS': [5, 5, 1]} # TODO
+    'Aviation': {'data': 'train_lower.parquet.gzip', 'T':'SUM_ophrs_act', 'M': [], 'mode': 'single-emb'} # mode: ['single-emb', 'multi-emb']
 }
 if args.data in data_parser.keys():
     data_info = data_parser[args.data]
     args.data_path = data_info['data'] # overrides data_path via data setting in data_parser.
     args.target = data_info['T']       # overrides target
+    if data_info[args.features] == [] and args.data == "Aviation": 
+        args.mode = data_info['mode']
+        tmp, _ = read_aviation(args.root_path, args.data_path, args.mode)
+        ncols = tmp.columns.size
+        data_info['M'] = [ncols, ncols, ncols]
+        args.des = args.des + "-" + args.mode 
     args.enc_in, args.dec_in, args.c_out = data_info[args.features] # get either keys: [M, S, MS] depending on --features option
 
 # s_layer and model type (informer, informerstack) together determine if e_layer should be overridden or not. (see Exp_Informer)
@@ -97,7 +118,8 @@ Exp = Exp_Informer
 
 for ii in range(args.itr):
     # setting record of experiments
-    setting = '{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_at{}_fc{}_eb{}_dt{}_mx{}_{}_{}'.format(args.model, args.data, args.features, 
+    setting = '{}_{}_{}_ft{}_sl{}_ll{}_pl{}_dm{}_nh{}_el{}_dl{}_df{}_at{}_fc{}_eb{}_dt{}_mx{}_{}_{}'.format(
+                args.model, args.data, Path(args.root_path).name, args.features, 
                 args.seq_len, args.label_len, args.pred_len,
                 args.d_model, args.n_heads, args.e_layers, args.d_layers, args.d_ff, args.attn, args.factor, 
                 args.embed, args.distil, args.mix, args.des, ii)
@@ -111,11 +133,18 @@ for ii in range(args.itr):
         print('>>>>>>>start training : {}>>>>>>>>>>>>>>>>'.format(setting))
         exp.train(setting)
     
-    # print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
-    # exp.test(setting)
+    # Aviation does not have testing case but directly out-of-sample forecast in each rolling backtesting iteration.
+    if args.data != "Aviation": 
+        print('>>>>>>>testing : {}<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        exp.test(setting)
 
     if args.do_predict:
         print('>>>>>>>predicting : {}<<<<<<<<<<<<<<<<<<<<<<<'.format(setting))
+        exp.insample_predict(setting, load=True, flag='train', save_names=['train_prediction.npy', 'train_meta.pkl'], 
+                             shuffle_flag=False, drop_last=False, batch_size=args.batch_size, freq=args.freq)
+        exp.insample_predict(setting, load=True, flag='val', save_names=['val_prediction.npy', 'val_meta.pkl'], 
+                             shuffle_flag=False, drop_last=False, batch_size=args.batch_size, freq=args.freq)
+        # exp.insample_predict(setting, load=True, save_name='test_prediction.npy')
         exp.predict(setting, load=True)
 
     torch.cuda.empty_cache()

@@ -1,11 +1,13 @@
 import os
 import numpy as np
 import pandas as pd
-
+from pathlib import Path
 import torch
 from torch.utils.data import Dataset, DataLoader
+import pickle 
 # from sklearn.preprocessing import StandardScaler
 
+from utils.read_aviation import read_aviation
 from utils.tools import StandardScaler
 from utils.timefeatures import time_features
 
@@ -15,7 +17,7 @@ warnings.filterwarnings('ignore')
 class Dataset_ETT_hour(Dataset):
     def __init__(self, root_path, flag='train', size=None, 
                  features='S', data_path='ETTh1.csv', 
-                 target: str='OT', scale=True, inverse=False, timeenc:int=0, freq:str='h', cols=None):
+                 target: str='OT', scale=True, inverse=False, timeenc:int=0, freq:str='h', cols=None, **kwargs):
         # target: str - currently it doesn't accept a list, i.e., multioutput.
         # size: [seq_len, label_len, pred_len]
         # info
@@ -128,7 +130,7 @@ class Dataset_ETT_hour(Dataset):
 class Dataset_ETT_minute(Dataset):
     def __init__(self, root_path, flag='train', size=None, 
                  features='S', data_path='ETTm1.csv', 
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='t', cols=None):
+                 target='OT', scale=True, inverse=False, timeenc=0, freq='t', cols=None, **kwargs):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -215,7 +217,7 @@ class Dataset_ETT_minute(Dataset):
 class Dataset_Custom(Dataset):
     def __init__(self, root_path, flag='train', size=None, 
                  features='S', data_path='ETTh1.csv', 
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='h', cols=None):
+                 target='OT', scale=True, inverse=False, timeenc=0, freq='h', cols=None, **kwargs):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -319,7 +321,7 @@ class Dataset_Custom(Dataset):
 class Dataset_Pred(Dataset):
     def __init__(self, root_path, flag='pred', size=None, 
                  features='S', data_path='ETTh1.csv', 
-                 target='OT', scale=True, inverse=False, timeenc=0, freq='15min', cols=None):
+                 target='OT', scale=True, inverse=False, timeenc=0, freq='15min', cols=None, **kwargs):
         # size [seq_len, label_len, pred_len]
         # info
         if size == None:
@@ -410,3 +412,223 @@ class Dataset_Pred(Dataset):
 
     def inverse_transform(self, data):
         return self.scaler.inverse_transform(data)
+
+
+class Dataset_Aviation(Dataset):
+    """
+    Workflow: read data -> partition into train/val and intentioanlly make test==val -> 
+    categorical encoding (make sure train/val same pattern) -> organize format 
+    """
+    def __init__(self, root_path, flag='train', size=None, 
+                 features='M', data_path='train_lower.parquet.gzip', target='SUM_ophrs_act', 
+                 scale=True, inverse=False, timeenc=0, freq='m', cols=None, mode='single-emb', **kwargs):
+        # size [seq_len, label_len, pred_len]
+        # info
+        if size == None:
+            self.seq_len, self.label_len, self.pred_len = 24, 12, 6
+        else:
+            self.seq_len, self.label_len, self.pred_len = size
+        # init
+        assert flag in ['train', 'val']
+        type_map = {'train':0, 'val':1}
+        self.set_type = type_map[flag]
+        
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.inverse = inverse
+        self.timeenc = timeenc
+        self.freq = freq
+        self.cols=cols
+        self.root_path = root_path
+        self.data_path = data_path
+        self.mode = mode 
+        self.__read_data__()
+
+        
+
+    def __read_data__(self):
+        
+        # df_raw.columns final ordering: ['date', ...(other features), target feature]
+        # cols can be exogenous non-date features from external or df_raw columns  
+        self.scaler = StandardScaler()
+        df_raw, hiercols = read_aviation(self.root_path, self.data_path, mode=self.mode)
+        df_raw = df_raw.reset_index()
+        self.hiercols = hiercols 
+
+        # 90:10 ratio for train:val:test. # TODO: fix val size to be pred_len?
+        num_train = int(len(df_raw)*0.9)
+        border1s = [0, num_train-self.seq_len]
+        border2s = [num_train, len(df_raw)]
+        border1 = border1s[self.set_type]
+        border2 = border2s[self.set_type]
+        
+        if self.features in ['M', 'MS']:
+            cols_data = df_raw.columns[1:] # remove date column
+            df_data = df_raw[cols_data]
+        elif self.features == 'S':
+            raise NotImplementedError()
+            # df_data = df_raw[[self.target]]
+
+        # Informer does not accept nan values
+        ## iterpolation for missing values in between non-missings + fillna(0)
+        df_data[border1s[0]:border2s[0]] = df_data[border1s[0]:border2s[0]].interpolate(axis=0).fillna(0)
+        df_data = df_data.fillna(0)
+
+        # scaling 
+        if self.scale:
+            train_data = df_data[border1s[0]:border2s[0]]
+            self.scaler.fit(train_data.values)
+            data = self.scaler.transform(df_data.values)
+        else:
+            data = df_data.values
+            
+        df_stamp = df_raw[['date']][border1:border2]
+        df_stamp['date'] = pd.to_datetime(df_stamp.date)
+        data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq)
+
+        self.data_x = data[border1:border2]
+        if self.inverse:
+            self.data_y = df_data.values[border1:border2]
+        else:
+            self.data_y = data[border1:border2]
+        self.data_stamp = data_stamp
+    
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len 
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[s_begin:s_end] # seq_len
+        if self.inverse:
+            seq_y = np.concatenate([
+                self.data_x[r_begin:r_begin+self.label_len], 
+                self.data_y[r_begin+self.label_len:r_end]
+            ], 0)
+        else:
+            seq_y = self.data_y[r_begin:r_end]
+        seq_x_mark = self.data_stamp[s_begin:s_end] # seq_len 
+        seq_y_mark = self.data_stamp[r_begin:r_end] # label_len + pred_len 
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+    
+    def __len__(self):
+        return len(self.data_x) - self.seq_len- self.pred_len + 1
+
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
+
+    def save(self, path): 
+        save_dict = {
+            "root_path": self.root_path, "data_path": self.data_path, "set_type": self.set_type, 
+            "size": [self.seq_len, self.label_len, self.pred_len], 
+            "target": self.target, "features": self.features, 
+            "scale": self.scale, "inverse": self.inverse, "timeenc": self.timeenc, 
+            "freq": self.freq, "cols": self.cols, "mode": self.mode 
+        }
+        with open(path, 'wb') as fw: 
+            pickle.dump(save_dict, fw)
+
+class Dataset_AviationPred(Dataset):
+    def __init__(self, root_path, flag='pred', size=None, 
+                 features='M', data_path='train_lower.parquet.gzip', target='SUM_ophrs_act', 
+                 scale=True, inverse=False, timeenc=0, freq='m', cols=None, mode='single-emb', **kwargs):
+        # size [seq_len, label_len, pred_len]
+        # info
+        if size == None:
+            self.seq_len, self.label_len, self.pred_len = 24, 12, 6
+        else:
+            self.seq_len, self.label_len, self.pred_len = size
+        # init
+        assert flag in ['pred']
+        
+        self.features = features
+        self.target = target
+        self.scale = scale
+        self.inverse = inverse
+        self.timeenc = timeenc
+        self.freq = freq
+        self.cols=cols
+        self.root_path = root_path
+        self.data_path = data_path
+        self.mode = mode 
+        self.__read_data__()
+
+    def __read_data__(self):
+
+        # df_raw.columns final ordering: ['date', ...(other features), target feature]
+        # cols can be exogenous non-date features from external or df_raw columns  
+        self.scaler = StandardScaler()
+        df_raw, hiercols = read_aviation(self.root_path, self.data_path, mode=self.mode)
+        df_raw = df_raw.reset_index()
+        self.hiercols = hiercols 
+        
+        border1 = len(df_raw)-self.seq_len
+        border2 = len(df_raw)
+        
+        if self.features=='M' or self.features=='MS':
+            cols_data = df_raw.columns[1:]
+            df_data = df_raw[cols_data]
+        elif self.features=='S':
+            raise NotImplementedError()
+            # df_data = df_raw[[self.target]]
+
+        # Informer does not accept nan values
+        ## iterpolation for missing values in between non-missings + fillna(0)
+        df_data = df_data.interpolate(axis=0).fillna(0)
+
+        # scaling 
+        if self.scale:
+            self.scaler.fit(df_data.values)
+            data = self.scaler.transform(df_data.values)
+        else:
+            data = df_data.values
+            
+        tmp_stamp = df_raw[['date']][border1:border2] # take the last seq_len part of the whole dataset
+        tmp_stamp['date'] = pd.to_datetime(tmp_stamp.date)
+        pred_dates = pd.date_range(tmp_stamp.date.values[-1], periods=self.pred_len+1, freq=self.freq)
+        
+        df_stamp = pd.DataFrame(columns = ['date'])
+        df_stamp.date = list(tmp_stamp.date.values) + list(pred_dates[1:]) # seq_len + pred_len (label_len is the last part of seq_len.)
+        data_stamp = time_features(df_stamp, timeenc=self.timeenc, freq=self.freq[-1:])
+
+        self.data_x = data[border1:border2]
+        if self.inverse:
+            self.data_y = df_data.values[border1:border2]
+        else:
+            self.data_y = data[border1:border2]
+        self.data_stamp = data_stamp
+    
+    def __getitem__(self, index):
+        s_begin = index
+        s_end = s_begin + self.seq_len
+        r_begin = s_end - self.label_len
+        r_end = r_begin + self.label_len + self.pred_len
+
+        seq_x = self.data_x[s_begin:s_end]
+        if self.inverse:
+            seq_y = self.data_x[r_begin:r_begin+self.label_len]
+        else:
+            seq_y = self.data_y[r_begin:r_begin+self.label_len]
+        seq_x_mark = self.data_stamp[s_begin:s_end]
+        seq_y_mark = self.data_stamp[r_begin:r_end]
+
+        return seq_x, seq_y, seq_x_mark, seq_y_mark
+    
+    def __len__(self):
+        return len(self.data_x) - self.seq_len + 1
+
+    def inverse_transform(self, data):
+        return self.scaler.inverse_transform(data)
+
+    def save(self, path): 
+        save_dict = {
+            "root_path": self.root_path, "data_path": self.data_path, "set_type": self.set_type, 
+            "size": [self.seq_len, self.label_len, self.pred_len], 
+            "target": self.target, "features": self.features, 
+            "scale": self.scale, "inverse": self.inverse, "timeenc": self.timeenc, 
+            "freq": self.freq, "cols": self.cols, "mode": self.mode 
+        }
+        with open(path, 'wb') as fw: 
+            pickle.dump(save_dict, fw)

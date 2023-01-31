@@ -3,8 +3,8 @@ import numpy as np
 import pickle, os, time 
 
 from data.data_loader import (
-    Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, 
-    Dataset_Aviation, Dataset_Pred
+    Dataset_ETT_hour, Dataset_ETT_minute, Dataset_Custom, Dataset_Pred, 
+    Dataset_Aviation, Dataset_AviationPred
 )
 from exp.exp_basic import Exp_Basic
 from models.model import Informer, InformerStack
@@ -60,7 +60,7 @@ class Exp_Informer(Exp_Basic):
             model = nn.DataParallel(model, device_ids=self.args.device_ids)
         return model
 
-    def _get_data(self, flag):
+    def _get_data(self, flag, **kwargs):
         args = self.args
 
         # "Data" is the pointer that points to Dataset_Custom, Dataset_ETT_xxx etc.
@@ -72,13 +72,14 @@ class Exp_Informer(Exp_Basic):
             'WTH':Dataset_Custom,
             'ECL':Dataset_Custom,
             'Solar':Dataset_Custom,
-            'aviation': Dataset_Aviation, # LHT aviation dataset
+            'Aviation': Dataset_Aviation, # LHT aviation dataset
             'custom':Dataset_Custom,
         }
-        Data = data_dict[self.args.data] 
+        Data = data_dict[args.data] 
         # args.embed can be [timeF, fixed, learned]. Only timeF (default) corresponds to timeenc=1
         timeenc = 0 if args.embed!='timeF' else 1
 
+        # set default config
         # flag can be train, val, test, pred
         # when train/val mode (else): shuffle and drop last non-full batch
         # when test mode: no shuffling and still drop last non-full batch
@@ -87,9 +88,29 @@ class Exp_Informer(Exp_Basic):
             shuffle_flag = False; drop_last = True; batch_size = args.batch_size; freq=args.freq
         elif flag=='pred':
             shuffle_flag = False; drop_last = False; batch_size = 1; freq=args.detail_freq
-            Data = Dataset_Pred
-        else:
+            if self.args.data == 'Aviation': 
+                Data = Dataset_AviationPred
+            else: 
+                Data = Dataset_Pred
+        elif flag in ['train', 'val']:
             shuffle_flag = True; drop_last = True; batch_size = args.batch_size; freq=args.freq
+            if self.args.data == 'Aviation': drop_last = False; 
+        else: 
+            raise ValueError('flag value is not allowed.')
+        
+        # override config by kwargs if exists 
+        if len(kwargs): 
+            if 'Data' in kwargs.keys(): 
+                Data = kwargs['Data']
+            if 'shuffle_flag' in kwargs.keys(): 
+                shuffle_flag = kwargs['shuffle_flag']
+            if 'drop_last' in kwargs.keys(): 
+                drop_last = kwargs['drop_last']
+            if 'batch_size' in kwargs.keys(): 
+                batch_size = kwargs['batch_size']
+            if 'freq' in kwargs.keys(): 
+                freq = kwargs['freq']
+    
         data_set = Data(
             root_path=args.root_path,
             data_path=args.data_path,
@@ -100,7 +121,8 @@ class Exp_Informer(Exp_Basic):
             inverse=args.inverse,
             timeenc=timeenc,
             freq=freq,
-            cols=args.cols
+            cols=args.cols, 
+            mode = args.mode 
         )
         print(flag, len(data_set))
         data_loader = DataLoader(
@@ -135,7 +157,7 @@ class Exp_Informer(Exp_Basic):
     def train(self, setting):
         train_data, train_loader = self._get_data(flag = 'train')
         vali_data, vali_loader = self._get_data(flag = 'val')
-        test_data, test_loader = self._get_data(flag = 'test')
+        # test_data, test_loader = self._get_data(flag = 'test')
 
         path = os.path.join(self.args.checkpoints, setting)
         if not os.path.exists(path):
@@ -144,8 +166,7 @@ class Exp_Informer(Exp_Basic):
         time_now = time.time()
         
         train_steps = len(train_loader)
-        # the patience is for epoch count
-        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True)
+        early_stopping = EarlyStopping(patience=self.args.patience, verbose=True) # patience for epoch
         
         model_optim = self._select_optimizer()
         criterion =  self._select_criterion()
@@ -194,12 +215,12 @@ class Exp_Informer(Exp_Basic):
             print("Epoch: {} cost time: {}".format(epoch+1, time.time()-epoch_time))
             train_loss = np.average(train_loss)
             vali_loss = self.vali(vali_data, vali_loader, criterion)
-            test_loss = self.vali(test_data, test_loader, criterion)
+            #test_loss = self.vali(test_data, test_loader, criterion)
             history['train_epoch_loss'].append(train_loss)
             history['valid_epoch_loss'].append(vali_loss)
-            history['test_epoch_loss'].append(test_loss)
-            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} Test Loss: {4:.7f}".format(
-                epoch + 1, train_steps, train_loss, vali_loss, test_loss))
+            #history['test_epoch_loss'].append(test_loss)
+            print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format( # Test Loss: {4:.7f}
+                epoch + 1, train_steps, train_loss, vali_loss, ))#test_loss))
             # override history
             with open(path + '/history', 'wb') as fw: 
                 pickle.dump(history, fw)
@@ -254,6 +275,37 @@ class Exp_Informer(Exp_Basic):
         np.save(folder_path+'true.npy', trues)
 
         return
+
+    def insample_predict(self, setting: str, flag, load=False, save_names=['insample_prediction.npy', 'meta_info.pkl'], **kwargs):
+        pred_data, pred_loader = self._get_data(flag=flag, **kwargs)
+        if load:
+            path = os.path.join(self.args.checkpoints, setting)
+            best_model_path = path+'/'+'checkpoint.pth'
+            self.model.load_state_dict(torch.load(best_model_path))
+
+        self.model.eval()
+
+        preds = []
+        # In prediction mode, since we predict out-of-data, 
+        # batch_y is only of label_len while batch_y_mark is of label_len+pred_len. 
+        # len(pred_loader)==1
+        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(pred_loader):
+            pred, true = self._process_one_batch(
+                pred_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
+            preds.append(pred.detach().cpu().numpy())
+
+        preds = np.vstack(preds)
+        preds = preds.reshape(-1, preds.shape[-2], preds.shape[-1])
+        
+        # result save
+        folder_path = './results/' + setting +'/'
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
+        
+        np.save(folder_path+save_names[0], preds)
+        pred_data.save(folder_path+save_names[1])
+        return
+
 
     def predict(self, setting: str, load=False):
         pred_data, pred_loader = self._get_data(flag='pred')
@@ -326,13 +378,12 @@ class Exp_Informer(Exp_Basic):
         if self.args.use_amp: # default false
             with torch.cuda.amp.autocast():
                 if self.args.output_attention: # default false 
-                    outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                    outputs, _ = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
                 else:
                     outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
         else:
             if self.args.output_attention:
-                # output attention would just be the first row of the output batch 
-                outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)[0]
+                outputs, _ = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
             else:
                 outputs = self.model(batch_x, batch_x_mark, dec_inp, batch_y_mark)
         if self.args.inverse:

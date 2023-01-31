@@ -1,1 +1,1 @@
-python -u main_informer.py --model informer --data ... --features ... --seq_len ... --label_len ... --pred_len 6 --e_layers ... --d_layers ... --attn prob --des 'Exp' --itr 5 --factor 3
+python -u main_informer.py --model informer --data Aviation --root_path "./data/_data/aviation/01/" --features M --freq m --batch_size 8 --train_epochs 40 --patience 10 --learning_rate 0.0001 --seq_len 24 --label_len 12 --pred_len 6 --e_layers 2 --d_layers 1 --attn prob --des 'Exp' --itr 1 --do_predict

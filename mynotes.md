@@ -1,7 +1,12 @@
-multiple time series [#105](https://github.com/zhouhaoyi/Informer2020/issues/105)
+multiple time series [#105](https://github.com/zhouhaoyi/Informer2020/issues/105): 
 Is there a way to deal with categorical feature? [#191](https://github.com/zhouhaoyi/Informer2020/issues/191)
 Handling multi entity data [#271](https://github.com/zhouhaoyi/Informer2020/issues/271)
 
+If each time series has only one feature, maybe you can treat all time series as one large multi-dimensional time series, and each time series is one feature of this large sequence. (in your example: 30000+features with 2000 length)
+If your time series have many features, and there are spatial connections between different time series, maybe you can try to use graph convolution or graph attention with our model.
+The input's shape of Informer model without input layer must be [batch_size, seq_len, dimension], so if your data is multi time series with multi variate, the input's shape of input layer may be [batch_size, seq_len, num_series, num_features].
+If you want to use Informer to deal with multi time series whose features is more than 1, you need to modify input layer. A feasible solution is using emebdding layer for each categorical feature and aggregating the embeddings together, and then feed the embeddings to Informer.
+Hi, Informer can deal with Categorical Feature, you can use an Embedding Layer to transform the categorical feature into contiguous vector before feed the features into the model.
 
 shoule use Informerstack. (论文的实验使用了1/4L+L组合的informerstack模型。 #issue:186)
 
@@ -13,7 +18,8 @@ pred_len:	Prediction sequence length (defaults to 24)
 (label_len takes the last part of seq_len. Hence, the start token in the decoder comes from the last part of encoder's input.)
 Dataset 有 scale=True/False 可關閉 train/val/test loader standardization.
 
-
+作法一: 每一個bottom-level series columnwise合併, 然後 --features M 預測全部cases 
+作法二: 每一個bottom-level df columnwise合併, 然後透過embedding 得到唯一的series, 然後 --features M 預測全部case. (#191)
 
 
 % informer model structure: 
