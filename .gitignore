@@ -6,6 +6,7 @@ Untitled*.ipynb
 .vscode/
 _data/
 checkpoints/
+checkpoints_hpo/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

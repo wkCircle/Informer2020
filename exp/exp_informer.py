@@ -94,7 +94,8 @@ class Exp_Informer(Exp_Basic):
                 Data = Dataset_Pred
         elif flag in ['train', 'val']:
             shuffle_flag = True; drop_last = True; batch_size = args.batch_size; freq=args.freq
-            if self.args.data == 'Aviation': drop_last = False; 
+            if self.args.data == 'Aviation': 
+                drop_last = False; shuffle_flag=False;
         else: 
             raise ValueError('flag value is not allowed.')
         
@@ -138,17 +139,18 @@ class Exp_Informer(Exp_Basic):
         model_optim = optim.Adam(self.model.parameters(), lr=self.args.learning_rate)
         return model_optim
     
-    def _select_criterion(self):
-        criterion =  nn.MSELoss()
+    def _select_criterion(self, ):
+        criterion =  nn.MSELoss(reduction='none')
         return criterion
 
     def vali(self, vali_data, vali_loader, criterion):
         self.model.eval()
         total_loss = []
-        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(vali_loader):
+        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark, mask) in enumerate(vali_loader):
             pred, true = self._process_one_batch(
                 vali_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
             loss = criterion(pred.detach().cpu(), true.detach().cpu())
+            loss = (loss * mask.float()).sum() / mask.sum()
             total_loss.append(loss)
         total_loss = np.average(total_loss)
         self.model.train()
@@ -174,6 +176,7 @@ class Exp_Informer(Exp_Basic):
             scaler = torch.cuda.amp.GradScaler()
 
         history = {
+            'meta': self.args, 
             'train_epoch_loss':[], 'valid_epoch_loss': [], 'test_epoch_loss': [], 'criterion': criterion._get_name(), 
             'epochs': self.args.train_epochs, 'earlystop_patience': self.args.patience, 
         }
@@ -187,13 +190,14 @@ class Exp_Informer(Exp_Basic):
             # case ETTH1 (features M): batch_x(_mark) = (32,seq_len,7 (4)); batch_y(_mark)= (32, label_len+pred_len, 7 (4))
             # where 4 is determined by time_features(timeenc (args.embed),  args.freq) that generates 
             # [Hour of day, day of week, day of month, day of year] features for hourly freq.
-            for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(train_loader):
+            for i, (batch_x, batch_y, batch_x_mark, batch_y_mark, mask) in enumerate(train_loader):
                 iter_count += 1
                 
                 model_optim.zero_grad()
                 pred, true = self._process_one_batch(
                     train_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
                 loss = criterion(pred, true)
+                loss = (loss * mask.float()).sum() / mask.sum()
                 train_loss.append(loss.item())
                 
                 if (i+1) % 100==0:
@@ -222,7 +226,7 @@ class Exp_Informer(Exp_Basic):
             print("Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f}".format( # Test Loss: {4:.7f}
                 epoch + 1, train_steps, train_loss, vali_loss, ))#test_loss))
             # override history
-            with open(path + '/history', 'wb') as fw: 
+            with open(path + '/history.pkl', 'wb') as fw: 
                 pickle.dump(history, fw)
             # (override) check point per epoch: 
             early_stopping(vali_loss, self.model, path)
@@ -230,10 +234,15 @@ class Exp_Informer(Exp_Basic):
                 print("Early stopping")
                 break
 
-            adjust_learning_rate(model_optim, epoch+1, self.args)
+            # adjust_learning_rate(model_optim, epoch+1, self.args)
         # load the best 
         best_model_path = path+'/'+'checkpoint.pth'
         self.model.load_state_dict(torch.load(best_model_path))
+        best_val_loss = min(history['valid_epoch_loss'])
+        idx = history['valid_epoch_loss'].index(best_val_loss)
+        print("Best model found at epoch {} with train loss: {:.7f} Vali loss ever: {:.7f}".format(
+            idx, history['train_epoch_loss'][idx], best_val_loss
+        ))
         
         return history
 
@@ -249,7 +258,7 @@ class Exp_Informer(Exp_Basic):
         preds = []
         trues = []
         
-        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(test_loader):
+        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark, mask) in enumerate(test_loader):
             pred, true = self._process_one_batch(
                 test_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
             preds.append(pred.detach().cpu().numpy())
@@ -289,7 +298,7 @@ class Exp_Informer(Exp_Basic):
         # In prediction mode, since we predict out-of-data, 
         # batch_y is only of label_len while batch_y_mark is of label_len+pred_len. 
         # len(pred_loader)==1
-        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(pred_loader):
+        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark, mask) in enumerate(pred_loader):
             pred, true = self._process_one_batch(
                 pred_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
             preds.append(pred.detach().cpu().numpy())
@@ -323,7 +332,7 @@ class Exp_Informer(Exp_Basic):
         # In prediction mode, since we predict out-of-data, 
         # batch_y is only of label_len while batch_y_mark is of label_len+pred_len. 
         # len(pred_loader)==1
-        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark) in enumerate(pred_loader):
+        for i, (batch_x,batch_y,batch_x_mark,batch_y_mark, mask) in enumerate(pred_loader):
             pred, true = self._process_one_batch(
                 pred_data, batch_x, batch_y, batch_x_mark, batch_y_mark)
             preds.append(pred.detach().cpu().numpy())

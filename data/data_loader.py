@@ -90,6 +90,7 @@ class Dataset_ETT_hour(Dataset):
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
+        self.mask = (~df_raw.isna()).values[border1:border2]
     
     def __getitem__(self, index):
         # s_begin:s_end -- the encoder length 
@@ -116,8 +117,9 @@ class Dataset_ETT_hour(Dataset):
         # y_mark: dates features with decoder length 
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
+        mask = self.mask[s_end:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, mask 
     
     def __len__(self):
         # counts the number iterations avaialbe to take seq_x, seq_y
@@ -190,6 +192,7 @@ class Dataset_ETT_minute(Dataset):
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
+        self.mask = (~df_raw.isna()).values[border1:border2]
     
     def __getitem__(self, index):
         s_begin = index
@@ -204,8 +207,9 @@ class Dataset_ETT_minute(Dataset):
             seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
+        mask = self.mask[s_end:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, mask 
     
     def __len__(self):
         return len(self.data_x) - self.seq_len - self.pred_len + 1
@@ -292,6 +296,7 @@ class Dataset_Custom(Dataset):
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
+        self.mask = (~df_raw.isna()).values[border1:border2]
     
     def __getitem__(self, index):
         s_begin = index
@@ -309,8 +314,9 @@ class Dataset_Custom(Dataset):
             seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end] # seq_len 
         seq_y_mark = self.data_stamp[r_begin:r_end] # label_len + pred_len 
+        mask = self.mask[s_end:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, mask 
     
     def __len__(self):
         return len(self.data_x) - self.seq_len- self.pred_len + 1
@@ -457,7 +463,7 @@ class Dataset_Aviation(Dataset):
         self.hiercols = hiercols 
 
         # 90:10 ratio for train:val:test. # TODO: fix val size to be pred_len?
-        num_train = int(len(df_raw)*0.9)
+        num_train = int(len(df_raw)*0.8)
         border1s = [0, num_train-self.seq_len]
         border2s = [num_train, len(df_raw)]
         border1 = border1s[self.set_type]
@@ -471,7 +477,8 @@ class Dataset_Aviation(Dataset):
             # df_data = df_raw[[self.target]]
 
         # Informer does not accept nan values
-        ## iterpolation for missing values in between non-missings + fillna(0)
+        ## iterpolation for missing values in between non-missings, then fillna(0).
+        mask_notnan = (~df_data.isna()).values
         df_data[border1s[0]:border2s[0]] = df_data[border1s[0]:border2s[0]].interpolate(axis=0).fillna(0)
         df_data = df_data.fillna(0)
 
@@ -493,6 +500,7 @@ class Dataset_Aviation(Dataset):
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
+        self.mask = mask_notnan[border1:border2]
     
     def __getitem__(self, index):
         s_begin = index
@@ -510,8 +518,9 @@ class Dataset_Aviation(Dataset):
             seq_y = self.data_y[r_begin:r_end]
         seq_x_mark = self.data_stamp[s_begin:s_end] # seq_len 
         seq_y_mark = self.data_stamp[r_begin:r_end] # label_len + pred_len 
+        mask = self.mask[s_end:r_end] # not affecting model prediction but only affects backward when comapring pred to gt 
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, mask 
     
     def __len__(self):
         return len(self.data_x) - self.seq_len- self.pred_len + 1
@@ -576,6 +585,7 @@ class Dataset_AviationPred(Dataset):
 
         # Informer does not accept nan values
         ## iterpolation for missing values in between non-missings + fillna(0)
+        mask_notnan = (~df_data.isna()).values
         df_data = df_data.interpolate(axis=0).fillna(0)
 
         # scaling 
@@ -599,6 +609,7 @@ class Dataset_AviationPred(Dataset):
         else:
             self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
+        self.mask = mask_notnan[border1:border2]
     
     def __getitem__(self, index):
         s_begin = index
@@ -613,8 +624,9 @@ class Dataset_AviationPred(Dataset):
             seq_y = self.data_y[r_begin:r_begin+self.label_len]
         seq_x_mark = self.data_stamp[s_begin:s_end]
         seq_y_mark = self.data_stamp[r_begin:r_end]
+        mask = self.mask[s_end:r_end]
 
-        return seq_x, seq_y, seq_x_mark, seq_y_mark
+        return seq_x, seq_y, seq_x_mark, seq_y_mark, mask
     
     def __len__(self):
         return len(self.data_x) - self.seq_len + 1
