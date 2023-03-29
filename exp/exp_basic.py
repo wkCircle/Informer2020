@@ -10,7 +10,6 @@ class Exp_Basic(object):
 
     def _build_model(self):
         raise NotImplementedError
-        return None
     
     def _acquire_device(self):
         if self.args.use_gpu:

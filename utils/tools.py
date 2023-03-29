@@ -3,8 +3,8 @@ import torch
 
 def adjust_learning_rate(optimizer, epoch, args):
     # lr = args.learning_rate * (0.2 ** (epoch // 2))
-    if args.lradj=='type1':
-        lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch-1) // 1))}
+    if args.lradj=='type1': # default
+        lr_adjust = {epoch: args.learning_rate * (0.5 ** ((epoch-1) // 100))} # original: // 1
     elif args.lradj=='type2':
         lr_adjust = {
             2: 5e-5, 4: 1e-5, 6: 5e-6, 8: 1e-6, 
@@ -21,17 +21,18 @@ class EarlyStopping:
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
-        self.best_score = None
+        self.best_score = None # the larger the better
         self.early_stop = False
         self.val_loss_min = np.Inf
         self.delta = delta
 
     def __call__(self, val_loss, model, path):
         score = -val_loss
+        
         if self.best_score is None:
             self.best_score = score
             self.save_checkpoint(val_loss, model, path)
-        elif score < self.best_score + self.delta:
+        elif score < self.best_score + self.delta: 
             self.counter += 1
             print(f'EarlyStopping counter: {self.counter} out of {self.patience}')
             if self.counter >= self.patience:
@@ -58,9 +59,10 @@ class StandardScaler():
         self.mean = 0.
         self.std = 1.
     
-    def fit(self, data):
-        self.mean = data.mean(0)
-        self.std = data.std(0)
+    def fit(self, data: np.ndarray):
+        self.mean = np.nanmean(data, axis=0)
+        self.std = np.nanstd(data, axis=0)
+        self.std[ self.std < 1e-4 ] = 1.0 # avoid \epsilon in denominator 
 
     def transform(self, data):
         mean = torch.from_numpy(self.mean).type_as(data).to(data.device) if torch.is_tensor(data) else self.mean
@@ -70,7 +72,13 @@ class StandardScaler():
     def inverse_transform(self, data):
         mean = torch.from_numpy(self.mean).type_as(data).to(data.device) if torch.is_tensor(data) else self.mean
         std = torch.from_numpy(self.std).type_as(data).to(data.device) if torch.is_tensor(data) else self.std
-        if data.shape[-1] != mean.shape[-1]:
+        # for multi-emb mode of aviation dataset where each time series may have additional feature. 
+        # The following implementation assumes the target SUM_ophrs_act is always at the odd positions.
+        if data.shape[-1] == mean.shape[-1] // 2: 
+            mean = mean[1::2]
+            std = std[1::2]
+        # take only the last column when num cols not matched.
+        elif data.shape[-1] != mean.shape[-1]:
             mean = mean[-1:]
             std = std[-1:]
         return (data * std) + mean
